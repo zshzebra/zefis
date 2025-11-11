@@ -125,11 +125,13 @@ pub const Renderer = struct {
         const fill_color = self.style.getFillColor(layer_name, properties);
         const stroke_color = self.style.getStrokeColor(layer_name, properties);
 
+        const draw_outline = std.mem.eql(u8, layer_name, "building") or
+                           std.mem.eql(u8, layer_name, "admin");
+
         for (polygons) |polygon| {
             for (polygon.rings) |ring| {
                 if (ring.points.len < 3) continue;
 
-                // Use arena allocator for temporary geometry - no manual free needed
                 const screen_points = try self.scratch_arena.allocator().alloc(rl.Vector2, ring.points.len);
 
                 for (ring.points, 0..) |point, i| {
@@ -141,13 +143,17 @@ pub const Renderer = struct {
                         if (screen_points.len >= 3) {
                             self.drawFilledPolygon(screen_points, fill_color);
                         }
-                        self.drawPolygonOutline(screen_points, stroke_color, 1.0);
+                        if (draw_outline) {
+                            self.drawPolygonOutline(screen_points, stroke_color, 1.0);
+                        }
                     },
                     .inner => {
                         if (screen_points.len >= 3) {
                             self.drawFilledPolygon(screen_points, rl.Color.white);
                         }
-                        self.drawPolygonOutline(screen_points, stroke_color, 1.0);
+                        if (draw_outline) {
+                            self.drawPolygonOutline(screen_points, stroke_color, 1.0);
+                        }
                     },
                 }
             }
@@ -157,9 +163,7 @@ pub const Renderer = struct {
     fn drawFilledPolygon(self: *Renderer, points: []rl.Vector2, color: rl.Color) void {
         if (points.len < 3) return;
 
-        // Convert Vector2 points to flat f32 array for Earcut
         const vertices = self.scratch_arena.allocator().alloc(f32, points.len * 2) catch {
-            // Fallback to fan triangulation if allocation fails
             self.drawFilledPolygonFan(points, color);
             return;
         };
@@ -169,14 +173,11 @@ pub const Renderer = struct {
             vertices[i * 2 + 1] = point.y;
         }
 
-        // Run Earcut triangulation
         const indices = earcut.earcut(self.scratch_arena.allocator(), vertices, null, 2) catch {
-            // Fallback to fan triangulation if earcut fails
             self.drawFilledPolygonFan(points, color);
             return;
         };
 
-        // Draw triangles using the indices
         var i: usize = 0;
         while (i < indices.len) : (i += 3) {
             if (i + 2 >= indices.len) break;
