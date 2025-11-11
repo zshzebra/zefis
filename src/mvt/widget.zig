@@ -10,6 +10,7 @@ pub const MVTWidget = struct {
     cache: tile_cache.TileCache,
     renderer: renderer.Renderer,
     viewport: projection.Viewport,
+    cached_viewport: projection.Viewport,
 
     /// Initialize widget with viewport dimensions
     pub fn init(allocator: std.mem.Allocator, width: f32, height: f32) MVTWidget {
@@ -29,6 +30,7 @@ pub const MVTWidget = struct {
             .cache = tile_cache.TileCache.init(allocator),
             .renderer = rend,
             .viewport = viewport,
+            .cached_viewport = viewport,
         };
     }
 
@@ -75,33 +77,122 @@ pub const MVTWidget = struct {
             const proj = projection.Projection.init(self.viewport, tile.extent);
             self.renderer.setProjection(proj);
         }
+        self.renderer.markNeedsRedraw();
     }
 
     /// Set zoom level (1.0 = default, 2.0 = 2x zoom)
     pub fn setZoom(self: *MVTWidget, scale: f32) void {
-        self.viewport.scale = scale;
+        if (self.viewport.scale != scale) {
+            self.viewport.scale = scale;
+            self.renderer.markNeedsRedraw();
 
-        if (self.cache.getTile()) |tile| {
-            const proj = projection.Projection.init(self.viewport, tile.extent);
-            self.renderer.setProjection(proj);
+            if (self.cache.getTile()) |tile| {
+                const proj = projection.Projection.init(self.viewport, tile.extent);
+                self.renderer.setProjection(proj);
+            }
         }
     }
 
     /// Set pan offset in screen coordinates
     pub fn setPan(self: *MVTWidget, offset_x: f32, offset_y: f32) void {
-        self.viewport.offset_x = offset_x;
-        self.viewport.offset_y = offset_y;
+        if (self.viewport.offset_x != offset_x or self.viewport.offset_y != offset_y) {
+            self.viewport.offset_x = offset_x;
+            self.viewport.offset_y = offset_y;
+            self.renderer.markNeedsRedraw();
 
-        if (self.cache.getTile()) |tile| {
-            const proj = projection.Projection.init(self.viewport, tile.extent);
-            self.renderer.setProjection(proj);
+            if (self.cache.getTile()) |tile| {
+                const proj = projection.Projection.init(self.viewport, tile.extent);
+                self.renderer.setProjection(proj);
+            }
         }
     }
 
-    /// Render the currently loaded tile
-    pub fn draw(self: *MVTWidget) !void {
-        if (self.cache.getTile()) |tile| {
-            try self.renderer.drawTile(tile);
+    pub fn needsRedraw(self: *MVTWidget) bool {
+        return self.renderer.needs_redraw;
+    }
+
+    fn isTileVisible(self: *MVTWidget, grid_x: i32, grid_y: i32) bool {
+        const screen_size = @min(self.viewport.width, self.viewport.height);
+        const scaled_size = screen_size * self.viewport.scale;
+
+        const center_x = self.viewport.width / 2.0 + self.viewport.offset_x;
+        const center_y = self.viewport.height / 2.0 + self.viewport.offset_y;
+
+        const grid_offset_x = @as(f32, @floatFromInt(grid_x)) * scaled_size;
+        const grid_offset_y = @as(f32, @floatFromInt(grid_y)) * scaled_size;
+
+        const tile_left = center_x - scaled_size / 2.0 + grid_offset_x;
+        const tile_right = center_x + scaled_size / 2.0 + grid_offset_x;
+        const tile_top = center_y - scaled_size / 2.0 + grid_offset_y;
+        const tile_bottom = center_y + scaled_size / 2.0 + grid_offset_y;
+
+        return tile_right >= 0 and tile_left <= self.viewport.width and
+            tile_bottom >= 0 and tile_top <= self.viewport.height;
+    }
+
+    /// Render tiles to texture (call when idle)
+    pub fn renderToTexture(self: *MVTWidget) !void {
+        const width = @as(i32, @intFromFloat(self.viewport.width));
+        const height = @as(i32, @intFromFloat(self.viewport.height));
+
+        try self.renderer.ensureRenderTexture(width, height);
+
+        if (self.renderer.render_texture) |tex| {
+            rl.beginTextureMode(tex);
+            rl.clearBackground(rl.Color.init(240, 240, 235, 255));
+
+            const grid_positions = [_]struct { x: i32, y: i32 }{
+                .{ .x = -1, .y = -1 }, // top-left
+                .{ .x = 0, .y = -1 },  // top-right
+                .{ .x = -1, .y = 0 },  // bottom-left
+                .{ .x = 0, .y = 0 },   // bottom-right
+            };
+
+            if (self.cache.getTile()) |cached_tile| {
+                for (grid_positions) |pos| {
+                    if (self.isTileVisible(pos.x, pos.y)) {
+                        try self.renderer.drawTileAtPosition(cached_tile, pos.x, pos.y);
+                    }
+                }
+            }
+
+            rl.endTextureMode();
+            self.renderer.needs_redraw = false;
+            self.cached_viewport = self.viewport;
+        }
+    }
+
+    /// Draw cached texture to screen with current zoom/pan transforms
+    pub fn draw(self: *MVTWidget, mouse_pos: rl.Vector2) !void {
+        _ = mouse_pos;
+        if (self.renderer.render_texture) |tex| {
+            const scale_factor = self.viewport.scale / self.cached_viewport.scale;
+
+            const src = rl.Rectangle{
+                .x = 0,
+                .y = 0,
+                .width = @floatFromInt(tex.texture.width),
+                .height = -@as(f32, @floatFromInt(tex.texture.height)),
+            };
+
+            const scaled_width = self.cached_viewport.width * scale_factor;
+            const scaled_height = self.cached_viewport.height * scale_factor;
+
+            // Calculate where the world center appears in cached vs current viewport
+            const cached_center_x = self.cached_viewport.width / 2.0 + self.cached_viewport.offset_x;
+            const cached_center_y = self.cached_viewport.height / 2.0 + self.cached_viewport.offset_y;
+
+            const current_center_x = self.viewport.width / 2.0 + self.viewport.offset_x;
+            const current_center_y = self.viewport.height / 2.0 + self.viewport.offset_y;
+
+            const dst = rl.Rectangle{
+                .x = current_center_x - cached_center_x * scale_factor,
+                .y = current_center_y - cached_center_y * scale_factor,
+                .width = scaled_width,
+                .height = scaled_height,
+            };
+
+            rl.drawTexturePro(tex.texture, src, dst, rl.Vector2.zero(), 0, rl.Color.white);
         }
     }
 

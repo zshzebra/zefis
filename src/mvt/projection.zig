@@ -21,8 +21,8 @@ pub const Projection = struct {
         };
     }
 
-    /// Convert tile coordinates to screen position
-    pub fn tileToScreen(self: Projection, tile_x: i32, tile_y: i32) rl.Vector2 {
+    /// Convert tile coordinates to screen position with optional grid offset
+    pub fn tileToScreen(self: Projection, tile_x: i32, tile_y: i32, grid_x: i32, grid_y: i32) rl.Vector2 {
         const norm_x = @as(f32, @floatFromInt(tile_x)) / @as(f32, @floatFromInt(self.extent));
         const norm_y = @as(f32, @floatFromInt(tile_y)) / @as(f32, @floatFromInt(self.extent));
 
@@ -32,8 +32,11 @@ pub const Projection = struct {
         const center_x = self.viewport.width / 2.0 + self.viewport.offset_x;
         const center_y = self.viewport.height / 2.0 + self.viewport.offset_y;
 
-        const screen_x = center_x + (norm_x - 0.5) * scaled_size;
-        const screen_y = center_y + (norm_y - 0.5) * scaled_size;
+        const grid_offset_x = @as(f32, @floatFromInt(grid_x)) * scaled_size;
+        const grid_offset_y = @as(f32, @floatFromInt(grid_y)) * scaled_size;
+
+        const screen_x = center_x + (norm_x - 0.5) * scaled_size + grid_offset_x;
+        const screen_y = center_y + (norm_y - 0.5) * scaled_size + grid_offset_y;
 
         return .{ .x = screen_x, .y = screen_y };
     }

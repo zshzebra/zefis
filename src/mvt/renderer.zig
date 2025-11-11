@@ -8,69 +8,97 @@ pub const Renderer = struct {
     projection: projection.Projection,
     style: style.Style,
     allocator: std.mem.Allocator,
+    render_texture: ?rl.RenderTexture2D,
+    needs_redraw: bool,
 
     pub fn init(allocator: std.mem.Allocator, proj: projection.Projection) Renderer {
         return .{
             .projection = proj,
             .style = style.Style.init(),
             .allocator = allocator,
+            .render_texture = null,
+            .needs_redraw = true,
         };
     }
 
     pub fn deinit(self: *Renderer) void {
-        _ = self;
+        if (self.render_texture) |tex| {
+            rl.unloadRenderTexture(tex);
+        }
     }
 
     pub fn setProjection(self: *Renderer, proj: projection.Projection) void {
         self.projection = proj;
     }
 
-    pub fn drawTile(self: *Renderer, cached_tile: *tile_cache.CachedTile) !void {
-        for (cached_tile.layers) |*layer| {
-            try self.drawLayer(layer);
+    pub fn markNeedsRedraw(self: *Renderer) void {
+        self.needs_redraw = true;
+    }
+
+    pub fn ensureRenderTexture(self: *Renderer, width: i32, height: i32) !void {
+        if (self.render_texture) |tex| {
+            if (tex.texture.width != width or tex.texture.height != height) {
+                rl.unloadRenderTexture(tex);
+                self.render_texture = null;
+            }
+        }
+
+        if (self.render_texture == null) {
+            self.render_texture = try rl.loadRenderTexture(width, height);
+            self.needs_redraw = true;
         }
     }
 
-    fn drawLayer(self: *Renderer, layer: *tile_cache.DecodedLayer) !void {
+    pub fn drawTile(self: *Renderer, cached_tile: *tile_cache.CachedTile) !void {
+        try self.drawTileAtPosition(cached_tile, 0, 0);
+    }
+
+    pub fn drawTileAtPosition(self: *Renderer, cached_tile: *tile_cache.CachedTile, grid_x: i32, grid_y: i32) !void {
+        for (cached_tile.layers) |*layer| {
+            try self.drawLayer(layer, grid_x, grid_y);
+        }
+    }
+
+    fn drawLayer(self: *Renderer, layer: *tile_cache.DecodedLayer, grid_x: i32, grid_y: i32) !void {
         for (layer.features) |*feature| {
             if (feature.geometry_type == .polygon) {
-                try self.drawFeature(feature);
+                try self.drawFeature(feature, grid_x, grid_y);
             }
         }
 
         for (layer.features) |*feature| {
             if (feature.geometry_type == .linestring) {
-                try self.drawFeature(feature);
+                try self.drawFeature(feature, grid_x, grid_y);
             }
         }
 
         for (layer.features) |*feature| {
             if (feature.geometry_type == .point) {
-                try self.drawFeature(feature);
+                try self.drawFeature(feature, grid_x, grid_y);
             }
         }
     }
 
-    fn drawFeature(self: *Renderer, feature: *tile_cache.DecodedFeature) !void {
+    fn drawFeature(self: *Renderer, feature: *tile_cache.DecodedFeature, grid_x: i32, grid_y: i32) !void {
         switch (feature.geometry) {
             .unknown => {},
-            .point => |points| try self.drawPoints(points, feature.properties),
-            .linestring => |lines| try self.drawLineStrings(lines, feature.properties),
-            .polygon => |polygons| try self.drawPolygons(polygons, feature.properties),
+            .point => |points| try self.drawPoints(points, feature.properties, grid_x, grid_y),
+            .linestring => |lines| try self.drawLineStrings(lines, feature.properties, grid_x, grid_y),
+            .polygon => |polygons| try self.drawPolygons(polygons, feature.properties, grid_x, grid_y),
         }
     }
 
-    fn drawPoints(self: *Renderer, points: []tile_cache.DecodedGeometry.Point, properties: style.PropertyMap) !void {
+    fn drawPoints(self: *Renderer, points: []tile_cache.DecodedGeometry.Point, properties: style.PropertyMap, grid_x: i32, grid_y: i32) !void {
         const color = self.style.getPointColor(properties);
         const radius = self.style.getPointRadius(properties);
 
         for (points) |point| {
-            const screen_pos = self.projection.tileToScreen(point.x, point.y);
+            const screen_pos = self.projection.tileToScreen(point.x, point.y, grid_x, grid_y);
             rl.drawCircleV(screen_pos, radius, color);
         }
     }
 
-    fn drawLineStrings(self: *Renderer, lines: []tile_cache.DecodedGeometry.LineString, properties: style.PropertyMap) !void {
+    fn drawLineStrings(self: *Renderer, lines: []tile_cache.DecodedGeometry.LineString, properties: style.PropertyMap, grid_x: i32, grid_y: i32) !void {
         const color = self.style.getStrokeColor(properties);
         const width = self.style.getLineWidth(properties);
 
@@ -78,14 +106,14 @@ pub const Renderer = struct {
             if (line.points.len < 2) continue;
 
             for (0..line.points.len - 1) |i| {
-                const p1 = self.projection.tileToScreen(line.points[i].x, line.points[i].y);
-                const p2 = self.projection.tileToScreen(line.points[i + 1].x, line.points[i + 1].y);
+                const p1 = self.projection.tileToScreen(line.points[i].x, line.points[i].y, grid_x, grid_y);
+                const p2 = self.projection.tileToScreen(line.points[i + 1].x, line.points[i + 1].y, grid_x, grid_y);
                 rl.drawLineEx(p1, p2, width, color);
             }
         }
     }
 
-    fn drawPolygons(self: *Renderer, polygons: []tile_cache.DecodedGeometry.Polygon, properties: style.PropertyMap) !void {
+    fn drawPolygons(self: *Renderer, polygons: []tile_cache.DecodedGeometry.Polygon, properties: style.PropertyMap, grid_x: i32, grid_y: i32) !void {
         const fill_color = self.style.getFillColor(properties);
         const stroke_color = self.style.getStrokeColor(properties);
 
@@ -97,7 +125,7 @@ pub const Renderer = struct {
                 defer self.allocator.free(screen_points);
 
                 for (ring.points, 0..) |point, i| {
-                    screen_points[i] = self.projection.tileToScreen(point.x, point.y);
+                    screen_points[i] = self.projection.tileToScreen(point.x, point.y, grid_x, grid_y);
                 }
 
                 switch (ring.ring_type) {
