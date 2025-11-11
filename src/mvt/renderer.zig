@@ -10,6 +10,7 @@ pub const Renderer = struct {
     allocator: std.mem.Allocator,
     render_texture: ?rl.RenderTexture2D,
     needs_redraw: bool,
+    scratch_arena: std.heap.ArenaAllocator,
 
     pub fn init(allocator: std.mem.Allocator, proj: projection.Projection) Renderer {
         return .{
@@ -18,6 +19,7 @@ pub const Renderer = struct {
             .allocator = allocator,
             .render_texture = null,
             .needs_redraw = true,
+            .scratch_arena = std.heap.ArenaAllocator.init(allocator),
         };
     }
 
@@ -25,6 +27,7 @@ pub const Renderer = struct {
         if (self.render_texture) |tex| {
             rl.unloadRenderTexture(tex);
         }
+        self.scratch_arena.deinit();
     }
 
     pub fn setProjection(self: *Renderer, proj: projection.Projection) void {
@@ -33,6 +36,10 @@ pub const Renderer = struct {
 
     pub fn markNeedsRedraw(self: *Renderer) void {
         self.needs_redraw = true;
+    }
+
+    pub fn resetScratchMemory(self: *Renderer) void {
+        _ = self.scratch_arena.reset(.retain_capacity);
     }
 
     pub fn ensureRenderTexture(self: *Renderer, width: i32, height: i32) !void {
@@ -121,8 +128,8 @@ pub const Renderer = struct {
             for (polygon.rings) |ring| {
                 if (ring.points.len < 3) continue;
 
-                const screen_points = try self.allocator.alloc(rl.Vector2, ring.points.len);
-                defer self.allocator.free(screen_points);
+                // Use arena allocator for temporary geometry - no manual free needed
+                const screen_points = try self.scratch_arena.allocator().alloc(rl.Vector2, ring.points.len);
 
                 for (ring.points, 0..) |point, i| {
                     screen_points[i] = self.projection.tileToScreen(point.x, point.y, grid_x, grid_y);

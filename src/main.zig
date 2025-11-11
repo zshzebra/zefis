@@ -59,7 +59,7 @@ pub fn main() anyerror!void {
             const mouse_pos = rl.getMousePosition();
             const old_zoom = zoom;
             zoom *= @exp(mouse_wheel * 0.1);
-            zoom = @max(0.1, @min(zoom, 10.0));
+            zoom = @max(0.1, @min(zoom, 20.0));
 
             const zoom_ratio = zoom / old_zoom;
             const center_x = current_width / 2.0;

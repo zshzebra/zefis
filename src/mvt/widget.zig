@@ -115,8 +115,11 @@ pub const MVTWidget = struct {
         const screen_size = @min(self.viewport.width, self.viewport.height);
         const scaled_size = screen_size * self.viewport.scale;
 
-        const center_x = self.viewport.width / 2.0 + self.viewport.offset_x;
-        const center_y = self.viewport.height / 2.0 + self.viewport.offset_y;
+        const render_width = self.viewport.width * 2.0;
+        const render_height = self.viewport.height * 2.0;
+
+        const center_x = render_width / 2.0 + self.viewport.offset_x;
+        const center_y = render_height / 2.0 + self.viewport.offset_y;
 
         const grid_offset_x = @as(f32, @floatFromInt(grid_x)) * scaled_size;
         const grid_offset_y = @as(f32, @floatFromInt(grid_y)) * scaled_size;
@@ -126,26 +129,36 @@ pub const MVTWidget = struct {
         const tile_top = center_y - scaled_size / 2.0 + grid_offset_y;
         const tile_bottom = center_y + scaled_size / 2.0 + grid_offset_y;
 
-        return tile_right >= 0 and tile_left <= self.viewport.width and
-            tile_bottom >= 0 and tile_top <= self.viewport.height;
+        const margin = scaled_size;
+        return tile_right >= -margin and tile_left <= render_width + margin and
+            tile_bottom >= -margin and tile_top <= render_height + margin;
     }
 
     /// Render tiles to texture (call when idle)
     pub fn renderToTexture(self: *MVTWidget) !void {
-        const width = @as(i32, @intFromFloat(self.viewport.width));
-        const height = @as(i32, @intFromFloat(self.viewport.height));
+        const width = @as(i32, @intFromFloat(self.viewport.width * 2.0));
+        const height = @as(i32, @intFromFloat(self.viewport.height * 2.0));
 
         try self.renderer.ensureRenderTexture(width, height);
 
         if (self.renderer.render_texture) |tex| {
+            var render_viewport = self.viewport;
+            render_viewport.width = self.viewport.width * 2.0;
+            render_viewport.height = self.viewport.height * 2.0;
+
+            if (self.cache.getTile()) |tile| {
+                const proj = projection.Projection.init(render_viewport, tile.extent);
+                self.renderer.setProjection(proj);
+            }
+
             rl.beginTextureMode(tex);
             rl.clearBackground(rl.Color.init(240, 240, 235, 255));
 
             const grid_positions = [_]struct { x: i32, y: i32 }{
-                .{ .x = -1, .y = -1 }, // top-left
-                .{ .x = 0, .y = -1 },  // top-right
-                .{ .x = -1, .y = 0 },  // bottom-left
-                .{ .x = 0, .y = 0 },   // bottom-right
+                .{ .x = -1, .y = -1 },
+                .{ .x = 0, .y = -1 },
+                .{ .x = -1, .y = 0 },
+                .{ .x = 0, .y = 0 },
             };
 
             if (self.cache.getTile()) |cached_tile| {
@@ -158,7 +171,9 @@ pub const MVTWidget = struct {
 
             rl.endTextureMode();
             self.renderer.needs_redraw = false;
-            self.cached_viewport = self.viewport;
+            self.cached_viewport = render_viewport;
+
+            self.renderer.resetScratchMemory();
         }
     }
 
