@@ -1,6 +1,10 @@
 const std = @import("std");
 const rl = @import("raylib");
 const mvt = @import("mvt/widget.zig");
+const config = @import("mvt/config.zig");
+const tile_server = @import("mvt/tile_server.zig");
+const disk_cache = @import("mvt/disk_cache.zig");
+const tile_manager = @import("mvt/tile_manager.zig");
 
 pub fn main() anyerror!void {
     const screenWidth = 800;
@@ -17,18 +21,69 @@ pub fn main() anyerror!void {
     var widget = mvt.MVTWidget.init(allocator, screenWidth, screenHeight);
     defer widget.deinit();
 
-    widget.loadTileFromFile("resources/sample.mvt") catch |err| {
-        std.debug.print("Error loading tile: {}\n", .{err});
-        return;
+    var cfg = config.Config.loadFromHomeDir(allocator) catch |err| blk: {
+        std.debug.print("Warning: Could not load config: {}\n", .{err});
+        std.debug.print("Falling back to sample.mvt\n", .{});
+
+        widget.loadTileFromFile("resources/sample.mvt") catch |load_err| {
+            std.debug.print("Error loading sample tile: {}\n", .{load_err});
+            return;
+        };
+
+        if (widget.getTileInfo()) |info| {
+            std.debug.print("Loaded sample tile with extent={d}, layers={d}\n", .{ info.extent, info.num_layers });
+        }
+
+        break :blk null;
     };
+    defer if (cfg) |*c| c.deinit(allocator);
 
-    if (widget.getTileInfo()) |info| {
-        std.debug.print("Loaded tile with extent={d}, layers={d}\n", .{ info.extent, info.num_layers });
+    var tile_mgr: ?tile_manager.TileManager = null;
+    var cache: ?disk_cache.DiskCache = null;
+    var servers: ?[]tile_manager.TileManager.TileSource = null;
 
-        var i: usize = 0;
-        while (i < info.num_layers) : (i += 1) {
-            if (widget.getLayerInfo(i)) |layer_info| {
-                std.debug.print("  Layer {d}: '{s}' - {d} features\n", .{ i, layer_info.name, layer_info.num_features });
+    if (cfg) |c| {
+        cache = disk_cache.DiskCache.initInHomeDir(allocator) catch |err| blk: {
+            std.debug.print("Warning: Could not initialize disk cache: {}\n", .{err});
+            break :blk null;
+        };
+
+        if (cache) |*disk_cache_ptr| {
+            var source_list = std.ArrayList(tile_manager.TileManager.TileSource).empty;
+            defer source_list.deinit(allocator);
+
+            if (c.api_keys.mapbox) |mapbox_key| {
+                const mapbox_server = try tile_server.MapboxServer.init(allocator, mapbox_key, "mapbox.mapbox-streets-v8");
+                const mapbox_tile_server = mapbox_server.tileServer();
+                try source_list.append(allocator, .{
+                    .name = "Mapbox Streets",
+                    .server = mapbox_tile_server,
+                    .opacity = 1.0,
+                    .enabled = true,
+                });
+                std.debug.print("Enabled Mapbox Streets tile source\n", .{});
+            }
+
+            if (c.api_keys.openaip) |openaip_key| {
+                const openaip_server = try tile_server.OpenAIPServer.init(allocator, openaip_key);
+                const openaip_tile_server = openaip_server.tileServer();
+                try source_list.append(allocator, .{
+                    .name = "OpenAIP",
+                    .server = openaip_tile_server,
+                    .opacity = 0.8,
+                    .enabled = true,
+                });
+                std.debug.print("Enabled OpenAIP tile source\n", .{});
+            }
+
+            if (source_list.items.len > 0) {
+                servers = try allocator.dupe(tile_manager.TileManager.TileSource, source_list.items);
+                tile_mgr = try tile_manager.TileManager.init(allocator, servers.?, disk_cache_ptr.*);
+
+                widget.setTileManager(&tile_mgr.?);
+
+                widget.setCenter(-32.7850, 151.8827, 12);
+                std.debug.print("Set center to Newcastle, Australia (lat=-32.7850, lon=151.8827, zoom=12)\n", .{});
             }
         }
     }
@@ -127,5 +182,18 @@ pub fn main() anyerror!void {
             rl.drawText(info_text, 10, 35, 16, rl.Color.dark_gray);
         }
         rl.drawText("Controls: Scroll to zoom, Click+Drag to pan", 10, 55, 14, rl.Color.gray);
+    }
+
+    if (tile_mgr) |*mgr| {
+        mgr.deinit();
+    }
+    if (servers) |srv| {
+        for (srv) |*source| {
+            source.server.deinit();
+        }
+        allocator.free(srv);
+    }
+    if (cache) |*c| {
+        c.deinit();
     }
 }

@@ -18,6 +18,12 @@ pub fn build(b: *std.Build) !void {
     });
     const vtzero = vtzero_dep.module("vtzero");
 
+    const sqlite_dep = b.dependency("sqlite", .{
+        .target = target,
+        .optimize = optimize,
+    });
+    const sqlite = sqlite_dep.module("sqlite");
+
     const exe_mod = b.createModule(.{
         .root_source_file = b.path("src/main.zig"),
         .target = target,
@@ -25,6 +31,7 @@ pub fn build(b: *std.Build) !void {
     });
     exe_mod.addImport("raylib", raylib);
     exe_mod.addImport("vtzero", vtzero);
+    exe_mod.addImport("sqlite", sqlite);
 
     const run_step = b.step("run", "Run the app");
 

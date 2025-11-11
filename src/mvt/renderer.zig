@@ -3,6 +3,7 @@ const rl = @import("raylib");
 const projection = @import("projection.zig");
 const style = @import("style.zig");
 const tile_cache = @import("tile_cache.zig");
+const earcut = @import("earcut.zig");
 
 pub const Renderer = struct {
     projection: projection.Projection,
@@ -69,29 +70,29 @@ pub const Renderer = struct {
     fn drawLayer(self: *Renderer, layer: *tile_cache.DecodedLayer, grid_x: i32, grid_y: i32) !void {
         for (layer.features) |*feature| {
             if (feature.geometry_type == .polygon) {
-                try self.drawFeature(feature, grid_x, grid_y);
+                try self.drawFeature(layer.name, feature, grid_x, grid_y);
             }
         }
 
         for (layer.features) |*feature| {
             if (feature.geometry_type == .linestring) {
-                try self.drawFeature(feature, grid_x, grid_y);
+                try self.drawFeature(layer.name, feature, grid_x, grid_y);
             }
         }
 
         for (layer.features) |*feature| {
             if (feature.geometry_type == .point) {
-                try self.drawFeature(feature, grid_x, grid_y);
+                try self.drawFeature(layer.name, feature, grid_x, grid_y);
             }
         }
     }
 
-    fn drawFeature(self: *Renderer, feature: *tile_cache.DecodedFeature, grid_x: i32, grid_y: i32) !void {
+    fn drawFeature(self: *Renderer, layer_name: []const u8, feature: *tile_cache.DecodedFeature, grid_x: i32, grid_y: i32) !void {
         switch (feature.geometry) {
             .unknown => {},
             .point => |points| try self.drawPoints(points, feature.properties, grid_x, grid_y),
-            .linestring => |lines| try self.drawLineStrings(lines, feature.properties, grid_x, grid_y),
-            .polygon => |polygons| try self.drawPolygons(polygons, feature.properties, grid_x, grid_y),
+            .linestring => |lines| try self.drawLineStrings(layer_name, lines, feature.properties, grid_x, grid_y),
+            .polygon => |polygons| try self.drawPolygons(layer_name, polygons, feature.properties, grid_x, grid_y),
         }
     }
 
@@ -105,9 +106,9 @@ pub const Renderer = struct {
         }
     }
 
-    fn drawLineStrings(self: *Renderer, lines: []tile_cache.DecodedGeometry.LineString, properties: style.PropertyMap, grid_x: i32, grid_y: i32) !void {
-        const color = self.style.getStrokeColor(properties);
-        const width = self.style.getLineWidth(properties);
+    fn drawLineStrings(self: *Renderer, layer_name: []const u8, lines: []tile_cache.DecodedGeometry.LineString, properties: style.PropertyMap, grid_x: i32, grid_y: i32) !void {
+        const color = self.style.getStrokeColor(layer_name, properties);
+        const width = self.style.getLineWidth(layer_name, properties);
 
         for (lines) |line| {
             if (line.points.len < 2) continue;
@@ -120,9 +121,9 @@ pub const Renderer = struct {
         }
     }
 
-    fn drawPolygons(self: *Renderer, polygons: []tile_cache.DecodedGeometry.Polygon, properties: style.PropertyMap, grid_x: i32, grid_y: i32) !void {
-        const fill_color = self.style.getFillColor(properties);
-        const stroke_color = self.style.getStrokeColor(properties);
+    fn drawPolygons(self: *Renderer, layer_name: []const u8, polygons: []tile_cache.DecodedGeometry.Polygon, properties: style.PropertyMap, grid_x: i32, grid_y: i32) !void {
+        const fill_color = self.style.getFillColor(layer_name, properties);
+        const stroke_color = self.style.getStrokeColor(layer_name, properties);
 
         for (polygons) |polygon| {
             for (polygon.rings) |ring| {
@@ -154,6 +155,41 @@ pub const Renderer = struct {
     }
 
     fn drawFilledPolygon(self: *Renderer, points: []rl.Vector2, color: rl.Color) void {
+        if (points.len < 3) return;
+
+        // Convert Vector2 points to flat f32 array for Earcut
+        const vertices = self.scratch_arena.allocator().alloc(f32, points.len * 2) catch {
+            // Fallback to fan triangulation if allocation fails
+            self.drawFilledPolygonFan(points, color);
+            return;
+        };
+
+        for (points, 0..) |point, i| {
+            vertices[i * 2] = point.x;
+            vertices[i * 2 + 1] = point.y;
+        }
+
+        // Run Earcut triangulation
+        const indices = earcut.earcut(self.scratch_arena.allocator(), vertices, null, 2) catch {
+            // Fallback to fan triangulation if earcut fails
+            self.drawFilledPolygonFan(points, color);
+            return;
+        };
+
+        // Draw triangles using the indices
+        var i: usize = 0;
+        while (i < indices.len) : (i += 3) {
+            if (i + 2 >= indices.len) break;
+            const idx0 = indices[i];
+            const idx1 = indices[i + 1];
+            const idx2 = indices[i + 2];
+            if (idx0 < points.len and idx1 < points.len and idx2 < points.len) {
+                rl.drawTriangle(points[idx0], points[idx1], points[idx2], color);
+            }
+        }
+    }
+
+    fn drawFilledPolygonFan(self: *Renderer, points: []rl.Vector2, color: rl.Color) void {
         _ = self;
         if (points.len < 3) return;
 

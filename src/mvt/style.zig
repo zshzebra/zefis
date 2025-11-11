@@ -8,47 +8,117 @@ pub const Style = struct {
     default_point_color: rl.Color = rl.Color.red,
     default_line_width: f32 = 2.0,
     default_point_radius: f32 = 4.0,
+    opacity: f32 = 1.0,
 
     pub fn init() Style {
         return .{};
     }
 
-    pub fn getFillColor(self: Style, properties: PropertyMap) rl.Color {
-        if (properties.get("building")) |_| {
-            return rl.Color.init(180, 160, 140, 255);
-        }
-        if (properties.get("water")) |_| {
-            return rl.Color.init(170, 211, 223, 255);
-        }
-        if (properties.get("landuse")) |value| {
+    pub fn withOpacity(opacity: f32) Style {
+        return .{ .opacity = opacity };
+    }
+
+    pub fn getFillColor(self: Style, layer_name: []const u8, properties: PropertyMap) rl.Color {
+        // Check layer name first (Mapbox Streets uses layer names as primary classification)
+        const color = if (std.mem.eql(u8, layer_name, "water"))
+            rl.Color.init(170, 211, 223, 255) // Light blue
+        else if (std.mem.eql(u8, layer_name, "building"))
+            rl.Color.init(180, 160, 140, 255) // Tan
+        else if (std.mem.eql(u8, layer_name, "landuse")) blk: {
+            // Check class property for landuse
+            if (properties.get("class")) |class| {
+                if (std.mem.eql(u8, class, "park") or std.mem.eql(u8, class, "grass")) {
+                    break :blk rl.Color.init(200, 230, 180, 255); // Light green
+                } else if (std.mem.eql(u8, class, "wood") or std.mem.eql(u8, class, "forest")) {
+                    break :blk rl.Color.init(170, 217, 150, 255); // Forest green
+                } else if (std.mem.eql(u8, class, "agriculture")) {
+                    break :blk rl.Color.init(240, 235, 200, 255); // Wheat
+                } else if (std.mem.eql(u8, class, "residential")) {
+                    break :blk rl.Color.init(225, 225, 220, 255); // Light gray
+                }
+            }
+            break :blk rl.Color.init(220, 220, 210, 255); // Default landuse
+        } else if (std.mem.eql(u8, layer_name, "landcover")) blk: {
+            if (properties.get("class")) |class| {
+                if (std.mem.eql(u8, class, "grass")) {
+                    break :blk rl.Color.init(200, 230, 180, 255);
+                } else if (std.mem.eql(u8, class, "wood")) {
+                    break :blk rl.Color.init(170, 217, 150, 255);
+                }
+            }
+            break :blk rl.Color.init(220, 230, 210, 255);
+        } else if (properties.get("building")) |_|
+            rl.Color.init(180, 160, 140, 255)
+        else if (properties.get("water")) |_|
+            rl.Color.init(170, 211, 223, 255)
+        else if (properties.get("landuse")) |value| blk: {
             if (std.mem.eql(u8, value, "forest") or std.mem.eql(u8, value, "park")) {
-                return rl.Color.init(170, 217, 150, 255);
+                break :blk rl.Color.init(170, 217, 150, 255);
             }
-        }
-        if (properties.get("natural")) |value| {
+            break :blk self.default_fill_color;
+        } else if (properties.get("natural")) |value| blk: {
             if (std.mem.eql(u8, value, "wood") or std.mem.eql(u8, value, "forest")) {
-                return rl.Color.init(150, 200, 130, 255);
+                break :blk rl.Color.init(150, 200, 130, 255);
             }
-        }
+            break :blk self.default_fill_color;
+        } else
+            self.default_fill_color;
 
-        return self.default_fill_color;
+        return self.applyOpacity(color);
     }
 
-    pub fn getStrokeColor(self: Style, properties: PropertyMap) rl.Color {
-        if (properties.get("highway")) |_| {
-            return rl.Color.init(255, 200, 100, 255);
-        }
-        if (properties.get("railway")) |_| {
-            return rl.Color.init(100, 100, 100, 255);
-        }
-        if (properties.get("waterway")) |_| {
-            return rl.Color.init(100, 150, 200, 255);
-        }
+    pub fn getStrokeColor(self: Style, layer_name: []const u8, properties: PropertyMap) rl.Color {
+        // Check layer name first
+        const color = if (std.mem.eql(u8, layer_name, "road")) blk: {
+            // Road colors based on class
+            if (properties.get("class")) |class| {
+                if (std.mem.eql(u8, class, "motorway")) {
+                    break :blk rl.Color.init(255, 140, 0, 255); // Orange
+                } else if (std.mem.eql(u8, class, "primary")) {
+                    break :blk rl.Color.init(255, 200, 100, 255); // Yellow-orange
+                } else if (std.mem.eql(u8, class, "secondary") or std.mem.eql(u8, class, "tertiary")) {
+                    break :blk rl.Color.init(255, 230, 150, 255); // Light yellow
+                } else if (std.mem.eql(u8, class, "street") or std.mem.eql(u8, class, "street_limited")) {
+                    break :blk rl.Color.init(255, 255, 255, 255); // White
+                }
+            }
+            break :blk rl.Color.init(200, 200, 200, 255); // Default road gray
+        } else if (std.mem.eql(u8, layer_name, "waterway"))
+            rl.Color.init(170, 211, 223, 255) // Water blue
+        else if (std.mem.eql(u8, layer_name, "admin"))
+            rl.Color.init(180, 160, 180, 255) // Purple-gray for boundaries
+        else if (properties.get("highway")) |_|
+            rl.Color.init(255, 200, 100, 255)
+        else if (properties.get("railway")) |_|
+            rl.Color.init(100, 100, 100, 255)
+        else if (properties.get("waterway")) |_|
+            rl.Color.init(100, 150, 200, 255)
+        else
+            self.default_stroke_color;
 
-        return self.default_stroke_color;
+        return self.applyOpacity(color);
     }
 
-    pub fn getLineWidth(self: Style, properties: PropertyMap) f32 {
+    pub fn getLineWidth(self: Style, layer_name: []const u8, properties: PropertyMap) f32 {
+        if (std.mem.eql(u8, layer_name, "road")) {
+            if (properties.get("class")) |class| {
+                if (std.mem.eql(u8, class, "motorway")) {
+                    return 4.0;
+                } else if (std.mem.eql(u8, class, "primary")) {
+                    return 3.0;
+                } else if (std.mem.eql(u8, class, "secondary") or std.mem.eql(u8, class, "tertiary")) {
+                    return 2.5;
+                } else if (std.mem.eql(u8, class, "street") or std.mem.eql(u8, class, "street_limited")) {
+                    return 2.0;
+                }
+                return 1.5;
+            }
+        } else if (std.mem.eql(u8, layer_name, "waterway")) {
+            return 2.0;
+        } else if (std.mem.eql(u8, layer_name, "admin")) {
+            return 1.0;
+        }
+
         if (properties.get("highway")) |highway_type| {
             if (std.mem.eql(u8, highway_type, "motorway")) {
                 return 4.0;
@@ -64,14 +134,25 @@ pub const Style = struct {
     }
 
     pub fn getPointColor(self: Style, properties: PropertyMap) rl.Color {
-        if (properties.get("amenity")) |_| {
-            return rl.Color.init(200, 100, 100, 255);
-        }
-        if (properties.get("shop")) |_| {
-            return rl.Color.init(100, 200, 100, 255);
-        }
+        const color = if (properties.get("amenity")) |_|
+            rl.Color.init(200, 100, 100, 255)
+        else if (properties.get("shop")) |_|
+            rl.Color.init(100, 200, 100, 255)
+        else
+            self.default_point_color;
 
-        return self.default_point_color;
+        return self.applyOpacity(color);
+    }
+
+    fn applyOpacity(self: Style, color: rl.Color) rl.Color {
+        if (self.opacity >= 1.0) return color;
+
+        return rl.Color.init(
+            color.r,
+            color.g,
+            color.b,
+            @intFromFloat(@as(f32, @floatFromInt(color.a)) * self.opacity),
+        );
     }
 
     pub fn getPointRadius(self: Style, properties: PropertyMap) f32 {

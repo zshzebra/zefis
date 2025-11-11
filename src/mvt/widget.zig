@@ -3,14 +3,19 @@ const rl = @import("raylib");
 const projection = @import("projection.zig");
 const renderer = @import("renderer.zig");
 const tile_cache = @import("tile_cache.zig");
+const tile_manager = @import("tile_manager.zig");
+const geo = @import("geo.zig");
 
 /// Widget for rendering Mapbox Vector Tiles
 pub const MVTWidget = struct {
     allocator: std.mem.Allocator,
+    tile_manager: ?*tile_manager.TileManager,
     cache: tile_cache.TileCache,
     renderer: renderer.Renderer,
     viewport: projection.Viewport,
     cached_viewport: projection.Viewport,
+    geo_center: ?geo.LatLon,
+    geo_zoom: u8,
 
     /// Initialize widget with viewport dimensions
     pub fn init(allocator: std.mem.Allocator, width: f32, height: f32) MVTWidget {
@@ -27,16 +32,24 @@ pub const MVTWidget = struct {
 
         return .{
             .allocator = allocator,
+            .tile_manager = null,
             .cache = tile_cache.TileCache.init(allocator),
             .renderer = rend,
             .viewport = viewport,
             .cached_viewport = viewport,
+            .geo_center = null,
+            .geo_zoom = 12,
         };
     }
 
     pub fn deinit(self: *MVTWidget) void {
         self.renderer.deinit();
         self.cache.deinit();
+    }
+
+    /// Set tile manager for multi-source tile fetching
+    pub fn setTileManager(self: *MVTWidget, manager: *tile_manager.TileManager) void {
+        self.tile_manager = manager;
     }
 
     /// Load and decode an MVT tile from file
@@ -107,6 +120,23 @@ pub const MVTWidget = struct {
         }
     }
 
+    /// Set geographic center point and zoom level
+    pub fn setCenter(self: *MVTWidget, lat: f64, lon: f64, zoom: u8) void {
+        self.geo_center = .{ .lat = lat, .lon = lon };
+        self.geo_zoom = zoom;
+        self.renderer.markNeedsRedraw();
+    }
+
+    /// Get current geographic center (if set)
+    pub fn getCenter(self: *MVTWidget) ?geo.LatLon {
+        return self.geo_center;
+    }
+
+    /// Get current geographic zoom level
+    pub fn getGeoZoom(self: *MVTWidget) u8 {
+        return self.geo_zoom;
+    }
+
     pub fn needsRedraw(self: *MVTWidget) bool {
         return self.renderer.needs_redraw;
     }
@@ -146,26 +176,42 @@ pub const MVTWidget = struct {
             render_viewport.width = self.viewport.width * 2.0;
             render_viewport.height = self.viewport.height * 2.0;
 
-            if (self.cache.getTile()) |tile| {
-                const proj = projection.Projection.init(render_viewport, tile.extent);
-                self.renderer.setProjection(proj);
-            }
+            // Use the actual tile extent from loaded tile, or default to 4096 for multi-tile mode
+            const tile_extent = if (self.cache.getTile()) |tile| tile.extent else 4096;
+            const proj = projection.Projection.init(render_viewport, tile_extent);
+            self.renderer.setProjection(proj);
 
             rl.beginTextureMode(tex);
             rl.clearBackground(rl.Color.init(240, 240, 235, 255));
 
-            const grid_positions = [_]struct { x: i32, y: i32 }{
-                .{ .x = -1, .y = -1 },
-                .{ .x = 0, .y = -1 },
-                .{ .x = -1, .y = 0 },
-                .{ .x = 0, .y = 0 },
-            };
+            if (self.tile_manager) |manager| {
+                if (self.geo_center) |center| {
+                    const tiles = try manager.getVisibleTiles(
+                        center.lat,
+                        center.lon,
+                        self.geo_zoom,
+                        render_viewport.width,
+                        render_viewport.height,
+                    );
+                    defer self.allocator.free(tiles);
 
-            if (self.cache.getTile()) |cached_tile| {
-                for (grid_positions) |pos| {
-                    if (self.isTileVisible(pos.x, pos.y)) {
-                        try self.renderer.drawTileAtPosition(cached_tile, pos.x, pos.y);
+                    for (tiles) |visible_tile| {
+                        const old_style = self.renderer.style;
+                        self.renderer.style.opacity = visible_tile.opacity;
+
+                        try self.renderer.drawTileAtPosition(
+                            visible_tile.tile,
+                            visible_tile.grid_x,
+                            visible_tile.grid_y,
+                        );
+
+                        self.renderer.style = old_style;
                     }
+                }
+            } else {
+                // Single-tile mode: render one tile centered at (0, 0)
+                if (self.cache.getTile()) |cached_tile| {
+                    try self.renderer.drawTileAtPosition(cached_tile, 0, 0);
                 }
             }
 
